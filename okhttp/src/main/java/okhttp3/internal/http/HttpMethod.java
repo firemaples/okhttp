@@ -17,9 +17,7 @@ package okhttp3.internal.http;
 
 public final class HttpMethod {
   public static boolean invalidatesCache(String method) {
-    return method.equals("POST")
-        || method.equals("PATCH")
-        || method.equals("PUT")
+    return method.equals("PATCH")
         || method.equals("DELETE")
         || method.equals("MOVE");     // WebDAV
   }

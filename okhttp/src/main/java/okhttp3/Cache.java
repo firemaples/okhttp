@@ -184,11 +184,21 @@ public final class Cache implements Closeable, Flushable {
   }
 
   public static String key(HttpUrl url) {
-    return ByteString.encodeUtf8(url.toString()).md5().hex();
+    return key(url, 0, 0);
+  }
+
+  public static String key(HttpUrl url, int headerHashCode, Integer bodyHashCode) {
+    return ByteString.encodeUtf8(url.toString() + String.valueOf(headerHashCode) +
+            String.valueOf(bodyHashCode)).md5().hex();
   }
 
   @Nullable Response get(Request request) {
-    String key = key(request.url());
+    Integer bodyHashCode = null;
+    if (request.body() != null) {
+      bodyHashCode = request.body().mHashCode();
+    }
+
+    String key = key(request.url(), request.headers().hashCode(), bodyHashCode);
     DiskLruCache.Snapshot snapshot;
     Entry entry;
     try {
@@ -229,10 +239,20 @@ public final class Cache implements Closeable, Flushable {
       }
       return null;
     }
-    if (!requestMethod.equals("GET")) {
+    if (!requestMethod.equals("GET") && !requestMethod.equals("POST") &&
+            !requestMethod.equals("PUT")) {
       // Don't cache non-GET responses. We're technically allowed to cache
       // HEAD requests and some POST requests, but the complexity of doing
       // so is high and the benefit is low.
+      return null;
+    }
+    Integer bodyHashCode = null;
+    if (response.request().body() != null) {
+      bodyHashCode = response.request().body().mHashCode();
+    }
+    if ((requestMethod.equals("POST") || requestMethod.equals("PUT")) &&
+            bodyHashCode == null) {
+      // Don't cache non hashcode request
       return null;
     }
 
@@ -243,7 +263,8 @@ public final class Cache implements Closeable, Flushable {
     Entry entry = new Entry(response);
     DiskLruCache.Editor editor = null;
     try {
-      editor = cache.edit(key(response.request().url()));
+      editor = cache.edit(key(response.request().url(),
+              response.request().headers().hashCode(), bodyHashCode));
       if (editor == null) {
         return null;
       }
@@ -256,7 +277,12 @@ public final class Cache implements Closeable, Flushable {
   }
 
   void remove(Request request) throws IOException {
-    cache.remove(key(request.url()));
+    Integer bodyHashCode = null;
+    if (request.body() != null) {
+      bodyHashCode = request.body().mHashCode();
+    }
+
+    cache.remove(key(request.url(), request.headers().hashCode(), bodyHashCode));
   }
 
   void update(Response cached, Response network) {
@@ -481,6 +507,7 @@ public final class Cache implements Closeable, Flushable {
     private final String url;
     private final Headers varyHeaders;
     private final String requestMethod;
+    private final RequestBody requestBody;
     private final Protocol protocol;
     private final int code;
     private final String message;
@@ -586,6 +613,14 @@ public final class Cache implements Closeable, Flushable {
         } else {
           handshake = null;
         }
+
+        if (!requestMethod.equals("GET")) {
+          MediaType mediaType = MediaType.parse(source.readUtf8LineStrict());
+          long contentLength = source.readLong();
+          requestBody = RequestBody.create(mediaType, source.readByteArray(contentLength));
+        } else {
+          requestBody = null;
+        }
       } finally {
         in.close();
       }
@@ -595,6 +630,7 @@ public final class Cache implements Closeable, Flushable {
       this.url = response.request().url().toString();
       this.varyHeaders = HttpHeaders.varyHeaders(response);
       this.requestMethod = response.request().method();
+      this.requestBody = response.request().body();
       this.protocol = response.protocol();
       this.code = response.code();
       this.message = response.message();
@@ -647,6 +683,15 @@ public final class Cache implements Closeable, Flushable {
         writeCertList(sink, handshake.localCertificates());
         sink.writeUtf8(handshake.tlsVersion().javaName()).writeByte('\n');
       }
+
+      if (!requestMethod.equals("GET")) {
+        sink.writeUtf8(requestBody.contentType().toString())
+                .writeByte('\n');
+        sink.writeLong(requestBody.contentLength())
+                .writeByte('\n');
+        requestBody.writeTo(sink);
+      }
+
       sink.close();
     }
 
@@ -700,7 +745,7 @@ public final class Cache implements Closeable, Flushable {
       String contentLength = responseHeaders.get("Content-Length");
       Request cacheRequest = new Request.Builder()
           .url(url)
-          .method(requestMethod, null)
+          .method(requestMethod, requestBody)
           .headers(varyHeaders)
           .build();
       return new Response.Builder()

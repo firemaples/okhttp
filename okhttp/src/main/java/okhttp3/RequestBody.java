@@ -37,6 +37,10 @@ public abstract class RequestBody {
     return -1;
   }
 
+  public Integer mHashCode() {
+    return null;
+  }
+
   /** Writes the content of this request to {@code sink}. */
   public abstract void writeTo(BufferedSink sink) throws IOException;
 
@@ -54,7 +58,8 @@ public abstract class RequestBody {
       }
     }
     byte[] bytes = content.getBytes(charset);
-    return create(contentType, bytes);
+
+    return _create(contentType, bytes, 0, bytes.length, content.hashCode());
   }
 
   /** Returns a new request body that transmits {@code content}. */
@@ -92,6 +97,30 @@ public abstract class RequestBody {
 
       @Override public long contentLength() {
         return byteCount;
+      }
+
+      @Override public void writeTo(BufferedSink sink) throws IOException {
+        sink.write(content, offset, byteCount);
+      }
+    };
+  }
+
+  /** Returns a new request body that transmits {@code content}. */
+  private static RequestBody _create(final @Nullable MediaType contentType, final byte[] content,
+                                     final int offset, final int byteCount, final int hashCode) {
+    if (content == null) throw new NullPointerException("content == null");
+    Util.checkOffsetAndCount(content.length, offset, byteCount);
+    return new RequestBody() {
+      @Override public @Nullable MediaType contentType() {
+        return contentType;
+      }
+
+      @Override public long contentLength() {
+        return byteCount;
+      }
+
+      @Override public Integer mHashCode() {
+        return hashCode;
       }
 
       @Override public void writeTo(BufferedSink sink) throws IOException {
